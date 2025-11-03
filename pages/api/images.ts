@@ -1,7 +1,31 @@
+// pages/api/images.ts
 import type { NextApiRequest, NextApiResponse } from "next";
 
-// tiny helper that calls OpenAI Images API (gpt-image-1)
-async function createImage(prompt: string) {
+const IMAGE_MODEL = "gpt-image-1"; // openai image model
+
+type GenBody = {
+  text?: string;       // full lesson text (we'll extract prompts)
+  prompts?: string[];  // or pass explicit prompts
+  size?: "512x512" | "1024x1024" | "2048x2048";
+  n?: number;          // max images to return
+};
+
+// pull out the "Subject: ..." lines from your art section
+function extractPromptsFromText(t: string): string[] {
+  if (!t) return [];
+  const out: string[] = [];
+  const re = /Subject:\s*([^]+?)(?=\n{2,}|\n\d+\)|\n?Subject:|$)/gi;
+  for (const m of t.matchAll(re)) {
+    const block = m[1].trim();
+    // collapse whitespace and keep the aspect flag if present
+    const single = block.replace(/\s+/g, " ").replace(/\s*;+\s*/g, ", ");
+    out.push(single);
+  }
+  // dedupe & trim to something sane
+  return Array.from(new Set(out)).slice(0, 6);
+}
+
+async function generateOne(prompt: string, size: string) {
   const r = await fetch("https://api.openai.com/v1/images", {
     method: "POST",
     headers: {
@@ -10,48 +34,51 @@ async function createImage(prompt: string) {
       ...(process.env.OPENAI_PROJECT ? { "OpenAI-Project": process.env.OPENAI_PROJECT } : {}),
     },
     body: JSON.stringify({
-      model: "gpt-image-1",
-      prompt,              // your sanitized mj-style prompt
-      size: "1024x1024",   // or 768x768 if you want it faster/cheaper
+      model: IMAGE_MODEL,
+      prompt,
+      size,
+      // you can set "background":"transparent" if you want PNG with alpha
     }),
   });
 
   const j = await r.json();
-  if (!r.ok) throw new Error(j?.error?.message || r.statusText);
-  // API returns base64 or URL depending on account; handle both
-  const data = j.data?.[0];
-  return data?.url || (data?.b64_json ? `data:image/png;base64,${data.b64_json}` : null);
+  if (!r.ok) {
+    const detail = j?.error?.message || r.statusText;
+    throw new Error(`image_error: ${detail}`);
+  }
+
+  const b64 = j?.data?.[0]?.b64_json;
+  if (!b64) throw new Error("image_error: no image returned");
+  return `data:image/png;base64,${b64}`;
 }
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") return res.status(405).json({ error: "method_not_allowed" });
+
   try {
-    const { prompts } = JSON.parse(req.body || "{}") as { prompts: string[] };
-    if (!Array.isArray(prompts) || prompts.length === 0) {
-      return res.status(400).json({ error: "no_prompts" });
+    const body: GenBody =
+      typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
+
+    const size = body.size || "1024x1024";
+    let prompts = Array.isArray(body.prompts) && body.prompts.length
+      ? body.prompts
+      : extractPromptsFromText(body.text || "");
+
+    // fallback if nothing extracted
+    if (!prompts.length) {
+      return res.status(400).json({ error: "no_prompts_found" });
     }
 
-    // run sequentially to keep it simple; parallelize later if needed
-    const urls: string[] = [];
-    for (const p of prompts) {
-      const url = await createImage(p);
-      if (url) urls.push(url);
-    }
+    // limit n if provided
+    const limit = Math.max(1, Math.min(body.n || prompts.length, prompts.length));
+    prompts = prompts.slice(0, limit);
 
-    const [artUrls, setArtUrls] = useState<string[]>([]);
+    const images = await Promise.all(
+      prompts.map((p) => generateOne(p, size))
+    );
 
-async function generateArtFromText(fullText: string) {
-  const prompts = Array.from(fullText.matchAll(/Subject:\s*([^]+?)(?:\n\n|$)/gi))
-    .map(m => m[0]) // or build from your sanitized blocks
-    .slice(0,6);
-  if (!prompts.length) return;
-
-  const r = await fetch("/api/images", { method: "POST", body: JSON.stringify({ prompts }) });
-  const j = await r.json();
-  if (Array.isArray(j.urls)) setArtUrls(j.urls);
-}
-
-    res.status(200).json({ urls });
+    return res.status(200).json({ images, prompts, size });
   } catch (e: any) {
-    res.status(500).json({ error: e?.message || "image_error" });
+    return res.status(500).json({ error: e?.message || "server_error" });
   }
 }
