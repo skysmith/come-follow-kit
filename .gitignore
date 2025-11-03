@@ -1,0 +1,9 @@
+# deps + build
+node_modules
+.next
+out
+# env
+.env
+.env.local
+# misc
+.DS_Store
