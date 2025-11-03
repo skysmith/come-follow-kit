@@ -10,18 +10,20 @@ type GenBody = {
   n?: number;          // max images to return
 };
 
-// pull out the "Subject: ..." lines from your art section
+// pull out the "Subject: ..." blocks from the art section (no matchAll)
 function extractPromptsFromText(t: string): string[] {
   if (!t) return [];
   const out: string[] = [];
   const re = /Subject:\s*([^]+?)(?=\n{2,}|\n\d+\)|\n?Subject:|$)/gi;
-  for (const m of t.matchAll(re)) {
-    const block = m[1].trim();
-    // collapse whitespace and keep the aspect flag if present
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    const block = (m[1] || "").trim();
+    if (!block) continue;
+    // collapse whitespace and keep any aspect flags
     const single = block.replace(/\s+/g, " ").replace(/\s*;+\s*/g, ", ");
     out.push(single);
   }
-  // dedupe & trim to something sane
+  // dedupe & cap
   return Array.from(new Set(out)).slice(0, 6);
 }
 
@@ -37,7 +39,6 @@ async function generateOne(prompt: string, size: string) {
       model: IMAGE_MODEL,
       prompt,
       size,
-      // you can set "background":"transparent" if you want PNG with alpha
     }),
   });
 
@@ -64,18 +65,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       ? body.prompts
       : extractPromptsFromText(body.text || "");
 
-    // fallback if nothing extracted
     if (!prompts.length) {
       return res.status(400).json({ error: "no_prompts_found" });
     }
 
-    // limit n if provided
     const limit = Math.max(1, Math.min(body.n || prompts.length, prompts.length));
     prompts = prompts.slice(0, limit);
 
-    const images = await Promise.all(
-      prompts.map((p) => generateOne(p, size))
-    );
+    const images = await Promise.all(prompts.map((p) => generateOne(p, size)));
 
     return res.status(200).json({ images, prompts, size });
   } catch (e: any) {
