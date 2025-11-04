@@ -40,16 +40,23 @@ async function callOpenAIJSONArray(system: string, user: string) {
       { role: "user", content: user },
     ],
     max_output_tokens: 800,
-    response_format: { type: "json_schema" as const, json_schema: {
-      name: "prompts",
-      schema: {
-        type: "object",
-        properties: { prompts: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 6 } },
-        required: ["prompts"],
-        additionalProperties: false
+    text: {
+        format: {
+          type: "json_schema",
+          json_schema: {
+            name: "prompts",
+            schema: {
+              type: "object",
+              properties: {
+                prompts: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 6 },
+              },
+              required: ["prompts"],
+              additionalProperties: false,
+            },
+            strict: true,
+          },
+        },
       },
-      strict: true
-    }},
   };
 
   const r = await fetch("https://api.openai.com/v1/responses", { method: "POST", headers, body: JSON.stringify(body) });
