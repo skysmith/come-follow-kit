@@ -4,150 +4,113 @@ import Head from "next/head";
 
 type Week = {
   id: string;
-  label: string;     // e.g., "November 3–9"
-  dates: string;     // e.g., "nov 3–nov 9"
-  reading?: string[];
-  theme?: string;
-  isThisWeek?: boolean;
-};
-
-type Meta = {
-  modelUsed?: string;
-  reading?: string[];
-  theme?: string;
-  limitedByTokens?: boolean;
-  debug?: any;
-  week?: Week;
+  dates: string;      // e.g., "oct 27–nov 2"
+  isCurrent?: boolean;
 };
 
 const outputsList = [
-  { id: "lesson", label: "Lesson Plan" },
-  { id: "activities", label: "Activities" },
-  { id: "handout", label: "Printable Handout" },
-  { id: "art", label: "Art Prompts" }, // when checked we’ll generate images too
+  { id: "lesson", label: "lesson plan" },
+  { id: "activities", label: "activities" },
+  { id: "handout", label: "printable handout" },
+  { id: "art", label: "art prompts" },
 ];
 
 export default function Home() {
   const [weeks, setWeeks] = useState<Week[]>([]);
-  const [week, setWeek] = useState<Week | null>(null);
-
+  const [weekId, setWeekId] = useState<string>("");
   const [audience, setAudience] = useState<"primary" | "youth" | "adults">("primary");
   const [outs, setOuts] = useState<string[]>(["lesson", "activities", "art"]);
-  const [notes, setNotes] = useState("");
-
+  const [notes, setNotes] = useState<string>("");
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<string>("waiting for output...");
   const [text, setText] = useState("");
-  const [meta, setMeta] = useState<Meta | null>(null);
+  const [meta, setMeta] = useState<any>(null);
+  const [copied, setCopied] = useState(false);
+  const [weeksLoading, setWeeksLoading] = useState(true);
 
-  // image bits
-  const [artUrls, setArtUrls] = useState<string[]>([]);
-  const [imgErr, setImgErr] = useState<string | null>(null);
-
+  // fetch weeks from api
   useEffect(() => {
-    // fetch rolling weeks from api
+    let alive = true;
     (async () => {
       try {
+        setWeeksLoading(true);
         const r = await fetch("/api/weeks");
         const j = await r.json();
-        const ws: Week[] = Array.isArray(j?.weeks) ? j.weeks : [];
-        setWeeks(ws);
-        setWeek(ws[0] || null); // first is "this week"
+        if (!r.ok) throw new Error(j?.error || r.statusText);
+        if (!alive) return;
+        const arr = (j?.weeks as Week[]) || [];
+        setWeeks(arr);
+        if (arr.length) {
+          const current = arr.find((w) => w.isCurrent) || arr[0];
+          setWeekId(current.id);
+        }
       } catch (e) {
         console.error(e);
+        setWeeks([]);
+        setWeekId("");
+      } finally {
+        if (alive) setWeeksLoading(false);
       }
     })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  const canGo = useMemo(() => !!week && outs.length > 0, [week, outs]);
+  const canGo = useMemo(() => !!weekId && outs.length > 0, [weekId, outs]);
 
   function toggleOutput(id: string) {
     setOuts((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
-  async function generateImagesFromLesson(fullText: string) {
-    setImgErr(null);
-    setArtUrls([]);
-    const r = await fetch("/api/images", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: fullText }),
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j?.error || "image generation failed");
-    return (j.images as string[]) || [];
-  }
-
   async function generate() {
-    if (!canGo || !week) return;
+    if (!canGo) return;
     setLoading(true);
-    setStatus("generating lesson…");
     setText("");
     setMeta(null);
-    setArtUrls([]);
-    setImgErr(null);
-
     try {
       const r = await fetch("/api/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           audience,
-          weekId: week.id,
+          weekId,
           outputs: outs,
           notes,
         }),
       });
-
       const j = await r.json();
-      setLoading(false);
-
       if (!r.ok) {
-        setStatus("error");
-        setText(`error: ${j?.error || "unknown"}`);
-        return;
-      }
-
-      const lessonText = (j?.text as string) || "";
-      setText(lessonText);
-      setMeta(j?.meta || null);
-      setStatus("done");
-
-      // if art prompts selected, kick off image generation
-      if (outs.includes("art") && lessonText) {
-        setStatus("generating images…");
-        try {
-          const imgs = await generateImagesFromLesson(lessonText);
-          setArtUrls(imgs);
-        } catch (err: any) {
-          console.error(err);
-          setImgErr(err?.message || "image error");
-        } finally {
-          setStatus("done");
-        }
+        setText(`error: ${j?.error || r.statusText}`);
+      } else {
+        setText(j?.text || "");
+        setMeta(j?.meta || null);
       }
     } catch (e: any) {
+      setText("error: " + (e?.message || "unknown"));
+    } finally {
       setLoading(false);
-      setStatus("error");
-      setText(`error: ${e?.message || "network_error"}`);
     }
   }
 
-  function copyText() {
-    if (!text) return;
-    navigator.clipboard.writeText(text);
+  async function copyOut() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1200);
+    } catch {}
   }
 
-  function downloadMd() {
-    if (!text) return;
-    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+  function downloadMarkdown() {
+    const blob = new Blob([text || ""], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
+    const wk = weeks.find((w) => w.id === weekId);
     a.href = url;
-    a.download = (week?.label || "lesson") + ".md";
+    a.download = `come-follow-kit_${wk?.dates || "lesson"}.md`;
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  const selectedWeek = weeks.find((w) => w.id === weekId);
 
   return (
     <>
@@ -156,148 +119,202 @@ export default function Home() {
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
 
-      <main className="min-h-screen bg-gradient-to-b from-yellow-50/60 to-white">
-        <div className="mx-auto max-w-6xl px-4 py-8">
-          <h1 className="text-2xl font-semibold mb-2">come–follow kit</h1>
-          <p className="text-sm text-gray-600 mb-6">
+      {/* header */}
+      <div className="relative overflow-hidden bg-gradient-to-br from-amber-100 via-white to-indigo-100">
+        <div className="mx-auto max-w-4xl px-4 py-12">
+          <h1 className="text-3xl font-semibold tracking-tight text-gray-900">
+            come-follow kit
+          </h1>
+          <p className="mt-2 text-gray-600">
             pick a week, select audience, add any notes, and generate a tight, scripture-anchored kit.
           </p>
+        </div>
+      </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* left panel */}
-            <section className="rounded-2xl border bg-white/70 backdrop-blur p-4 md:p-5 shadow-sm">
-              {/* week */}
-              <label className="block mb-4">
-                <div className="text-xs font-medium text-gray-600 mb-1">week</div>
-                <select
-                  className="w-full rounded-lg border px-3 py-2"
-                  value={week?.id || ""}
-                  onChange={(e) => setWeek(weeks.find((w) => w.id === e.target.value) || null)}
-                >
-                  {weeks.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.dates || w.label}
-                      {w.isThisWeek ? " • this week" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {/* audience */}
-              <div className="mb-4">
-                <div className="text-xs font-medium text-gray-600 mb-2">audience</div>
-                <div className="flex gap-2">
-                  {(["primary", "youth", "adults"] as const).map((a) => (
-                    <button
-                      key={a}
-                      onClick={() => setAudience(a)}
-                      className={[
-                        "px-3 py-1.5 rounded-lg border",
-                        audience === a ? "bg-indigo-600 text-white border-indigo-600" : "bg-white",
-                      ].join(" ")}
+      {/* main card */}
+      <main className="-mt-8">
+        <div className="mx-auto max-w-4xl px-4 pb-16">
+          <div className="rounded-2xl border border-gray-200 bg-white/90 shadow-sm backdrop-blur">
+            <div className="grid gap-8 p-6 md:grid-cols-2">
+              {/* form */}
+              <section className="space-y-4">
+                {/* week */}
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-gray-700">week</span>
+                  <div className="relative">
+                    <select
+                      className="w-full appearance-none rounded-xl border border-gray-300 bg-white px-3 py-2 pr-10 text-gray-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 disabled:bg-gray-100"
+                      value={weekId}
+                      disabled={weeksLoading || !weeks.length}
+                      onChange={(e) => setWeekId(e.target.value)}
                     >
-                      {a[0].toUpperCase() + a.slice(1)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* outputs */}
-              <fieldset className="mb-4 border rounded-xl p-3">
-                <legend className="text-xs font-medium text-gray-600 px-1">outputs</legend>
-                <div className="grid grid-cols-2 gap-2 mt-1">
-                  {outputsList.map((o) => (
-                    <label key={o.id} className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={outs.includes(o.id)}
-                        onChange={() => toggleOutput(o.id)}
-                      />
-                      <span>{o.label}</span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-
-              {/* notes */}
-              <label className="block">
-                <div className="text-xs font-medium text-gray-600 mb-1">notes (optional)</div>
-                <textarea
-                  className="w-full rounded-lg border px-3 py-2 min-h-[90px]"
-                  placeholder={`e.g., "please include a simple object lesson" or\n"we sing a short opening song"`}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                />
-              </label>
-
-              <div className="mt-4">
-                <button
-                  onClick={generate}
-                  disabled={!canGo || loading}
-                  className="rounded-lg bg-indigo-600 text-white px-4 py-2 disabled:opacity-40"
-                >
-                  {loading ? "generating…" : "generate"}
-                </button>
-              </div>
-            </section>
-
-            {/* right panel */}
-            <section className="rounded-2xl border bg-white/70 backdrop-blur p-4 md:p-5 shadow-sm">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="text-xs text-gray-500">{status}</div>
-                <div className="flex-1" />
-                <button
-                  onClick={copyText}
-                  disabled={!text}
-                  className="text-xs rounded border px-2 py-1 disabled:opacity-40"
-                >
-                  copy
-                </button>
-                <button
-                  onClick={downloadMd}
-                  disabled={!text}
-                  className="text-xs rounded border px-2 py-1 disabled:opacity-40"
-                >
-                  download .md
-                </button>
-              </div>
-
-              <article
-                className="prose max-w-none bg-white border rounded p-4 whitespace-pre-wrap text-sm"
-                style={{ minHeight: 220 }}
-              >
-                {text || "your lesson will appear here"}
-              </article>
-
-              {/* token trim hint */}
-              {meta?.limitedByTokens && (
-                <div className="mt-2 text-[11px] text-amber-700 bg-amber-50 inline-block px-2 py-1 rounded">
-                  trimmed to fit
-                </div>
-              )}
-
-              {/* image grid */}
-              {(artUrls.length > 0 || imgErr) && (
-                <div className="mt-5">
-                  <div className="text-xs font-medium text-gray-700 mb-2">art</div>
-                  {imgErr && (
-                    <div className="text-xs text-red-600 mb-2">image error: {imgErr}</div>
-                  )}
-                  {artUrls.length > 0 && (
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                      {artUrls.map((u, i) => (
-                        <img key={i} src={u} alt={`art-${i}`} className="rounded-lg shadow" />
+                      {weeks.map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.dates}{w.isCurrent ? "  • this week" : ""}
+                        </option>
                       ))}
-                    </div>
+                    </select>
+                    <svg
+                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500"
+                      viewBox="0 0 20 20"
+                      fill="currentColor"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 011.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"
+                        clipRule="evenodd"
+                      />
+                    </svg>
+                  </div>
+                  {selectedWeek?.isCurrent && (
+                    <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                      ● this week
+                    </span>
                   )}
+                </label>
+
+                {/* audience */}
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-gray-700">audience</span>
+                  <div className="grid grid-cols-3 gap-2">
+                    {(["primary", "youth", "adults"] as const).map((a) => {
+                      const active = audience === a;
+                      return (
+                        <button
+                          key={a}
+                          type="button"
+                          onClick={() => setAudience(a)}
+                          className={[
+                            "rounded-xl border px-3 py-2 text-sm capitalize transition",
+                            active
+                              ? "border-indigo-600 bg-indigo-600 text-white shadow-sm"
+                              : "border-gray-300 bg-white hover:border-indigo-400",
+                          ].join(" ")}
+                        >
+                          {a}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </label>
+
+                {/* outputs */}
+                <fieldset className="rounded-xl border border-gray-200 p-3">
+                  <legend className="px-1 text-sm font-medium text-gray-700">outputs</legend>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {outputsList.map((o) => {
+                      const checked = outs.includes(o.id);
+                      return (
+                        <label
+                          key={o.id}
+                          className={[
+                            "flex cursor-pointer items-center justify-between rounded-lg border px-3 py-2 text-sm transition",
+                            checked
+                              ? "border-indigo-500 bg-indigo-50"
+                              : "border-gray-300 hover:border-indigo-400",
+                          ].join(" ")}
+                        >
+                          <span className="capitalize">{o.label}</span>
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 accent-indigo-600"
+                            checked={checked}
+                            onChange={() => toggleOutput(o.id)}
+                          />
+                        </label>
+                      );
+                    })}
+                  </div>
+                </fieldset>
+
+                {/* notes */}
+                <label className="block">
+                  <span className="mb-1 block text-sm font-medium text-gray-700">
+                    notes (optional)
+                  </span>
+                  <textarea
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder='e.g., "please include a simple object lesson" or "we sing a short opening song"'
+                    rows={4}
+                    className="w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-gray-900 shadow-sm outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
+                  />
+                </label>
+
+                {/* action */}
+                <div className="pt-2">
+                  <button
+                    onClick={generate}
+                    disabled={!canGo || loading || weeksLoading || !weeks.length}
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-40"
+                  >
+                    {loading ? (
+                      <>
+                        <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/60 border-t-transparent" />
+                        generating…
+                      </>
+                    ) : (
+                      <>generate</>
+                    )}
+                  </button>
                 </div>
-              )}
-            </section>
+              </section>
+
+              {/* output */}
+              <section className="flex min-h-[220px] flex-col">
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-sm text-gray-500">
+                    {meta?.reading?.length ? (
+                      <span>
+                        using:{" "}
+                        <span className="font-medium text-gray-700">
+                          {meta.reading.join(", ")}
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="text-amber-700">
+                        {weeksLoading ? "loading weeks…" : "waiting for output…"}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={copyOut}
+                      disabled={!text}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 transition hover:border-indigo-400 disabled:opacity-40"
+                    >
+                      {copied ? "copied ✓" : "copy"}
+                    </button>
+                    <button
+                      onClick={downloadMarkdown}
+                      disabled={!text}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-700 transition hover:border-indigo-400 disabled:opacity-40"
+                    >
+                      download .md
+                    </button>
+                  </div>
+                </div>
+
+                <article
+                  className="prose prose-sm max-w-none grow overflow-auto rounded-xl border border-gray-200 bg-white p-4 text-gray-900"
+                  style={{ whiteSpace: "pre-wrap" }}
+                >
+                  {text ? text : (loading ? "" : <span className="text-gray-400">your lesson will appear here</span>)}
+                </article>
+
+                {meta?.modelUsed && (
+                  <div className="mt-3 text-right text-xs text-gray-500">
+                    model: {meta.modelUsed}
+                  </div>
+                )}
+              </section>
+            </div>
           </div>
 
-          <footer className="mt-8 text-[11px] text-gray-400">
+          <div className="mx-auto mt-6 max-w-4xl px-1 text-center text-xs text-gray-400">
             scripture-anchored. you review before teaching.
-          </footer>
+          </div>
         </div>
       </main>
     </>
